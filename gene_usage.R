@@ -28,12 +28,20 @@ fwrite(all_repertoires,"/mnt/susanne/datasets/all_repertoires.tsv", sep = "\t")
 all_repertoires <- fread("/mnt/susanne/datasets/all_repertoires.tsv", sep = "\t")
 
 # get the gene usage for each subject and status by sequence
-gene_sequence <- countGenes(all_repertoires,gene="v_call",groups=c("subject_id","status"),mode="gene")
-
+genes_all_subjects_by_sequence <- countGenes(all_repertoires,gene="v_call",groups=c("subject_id","status"),mode="gene")
+fwrite(genes_all_subjects_by_sequence,"/mnt/susanne/datasets/gene_usage/genes_all_subjects_by_sequence.tsv", sep = "\t")
 # get the gene usage for each subject and status by clone
-gene_clone <- countGenes(all_repertoires,gene="v_call",groups=c("subject_id","status"),clone="clone_id",mode="gene")
+genes_all_subjects_by_clone <- countGenes(all_repertoires,gene="v_call",groups=c("subject_id","status"),clone="clone_id",mode="gene")
+fwrite(genes_all_subjects_by_clone,"/mnt/susanne/datasets/gene_usage/genes_all_subjects_by_clone.tsv", sep = "\t")
 
-
+# extract clonally expanded sequences (clones with more than 5 sequences, clone_size_count >= 5)
+all_repertoires_clonally_expanded <- all_repertoires[all_repertoires$clone_size_count >= 5,]
+# get the gene usage for each subject and status by sequence for clonally expanded sequences
+genes_clonally_expanded_by_sequence <- countGenes(all_repertoires_clonally_expanded,gene="v_call",groups=c("subject_id","status"),mode="gene")
+fwrite(genes_clonally_expanded_by_sequence,"/mnt/susanne/datasets/gene_usage/genes_clonally_expanded_by_sequence.tsv", sep = "\t")
+# get the gene usage for each subject and status by clone for clonally expanded sequences
+genes_clonally_expanded_by_clone <- countGenes(all_repertoires_clonally_expanded,gene="v_call",groups=c("subject_id","status"),clone="clone_id",mode="gene")
+fwrite(genes_clonally_expanded_by_clone,"/mnt/susanne/datasets/gene_usage/genes_clonally_expanded_by_clone.tsv", sep = "\t")
 
 ##################### PERIPHERY VS CNS ANALYSIS ############################
 
@@ -42,7 +50,10 @@ all_repertoires$compartment <- if(all_repertoires$tissue %in% c("blood","cervica
 all_repertoires$compartment <- if(all_repertoires$tissue %in% c("CSF","brain white matter"), "CNS")
 
 # filter out the sequences that are not in the periphery or CNS compartment
-all_repertoires <- all_repertoires[!is.na(all_repertoires$compartment),]
+all_repertoires_filtered_CNS <- all_repertoires[!is.na(all_repertoires$compartment),]
 # filter subjects with less than 100 sequences in the CNS compartment
-all_repertoires <- all_repertoires[!all_repertoires$subject_id %in% all_repertoires[all_repertoires$compartment == "CNS",.N < 100,by=subject_id]$subject_id,]
+all_repertoires_filtered_CNS <- all_repertoires_filtered_CNS[!all_repertoires_filtered_CNS$subject_id %in% all_repertoires_filtered_CNS[all_repertoires_filtered_CNS$compartment == "CNS",.N < 100,by=subject_id]$subject_id,]
+
+# get the gene usage for each subject and status by sequence for CNS compartment
+families_tissue_by_sequence <- countGenes(all_repertoires_filtered_CNS, gene="v_call", groups=c("subject_id","status","compartment"), mode="family")
 
