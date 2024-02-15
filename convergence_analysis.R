@@ -8,12 +8,11 @@ suppressPackageStartupMessages(library("scoper"))
 suppressPackageStartupMessages(library("stringr"))
 library(ggplot2)
 library(data.table)
-library(dplyr)
-library(alakazam)
 library(grid)
 library(mltools)
 library(pheatmap)
 library(forcats)
+
 
 # read in .tsv files for MS patients and HC (healthy controls)
 input_MS <- "/mnt/susanne/datasets/MS_total"
@@ -58,7 +57,7 @@ sequences_per_subject <- all_heavy %>%
 write.table(sequences_per_subject, "/mnt/susanne/datasets/number_of_sequences_per_subject.tsv", sep="\t", quote = F, row.names = F)
 
 
-####################### CONVERGENCE ANALYSIS #############################################
+####################### IDENTIFYING CONVERGENT CLONES #############################################
 
 Vgene_freq <- alakazam::countGenes(all_heavy, gene = "v_call", groups = c("subject_id","status"), mode="gene")
 
@@ -103,14 +102,116 @@ for (v_gene_subset in unique_genes) {
 }
 # concatenate all dataframes into one
 df_convergence_all_genes <- rbindlist(dfs)
-write.table(df_convergence_all_genes, "/mnt/susanne/datasets/convergence/convergent_clones_all_genes.tsv", sep = "\t", quote = F, row.names = F)
+fwrite(df_convergence_all_genes, "/mnt/susanne/datasets/convergence/convergent_clones_all_genes.tsv", sep = "\t", quote = F, row.names = F)
+
+
+################################# COLLAPSING CONVERGENT CLUSTERS #############################################
+df_convergence_all_genes <- fread("/mnt/susanne/datasets/convergence/convergent_clones_all_genes.tsv", sep = "\t")
+
+# get dataframe columns sequence_id, unique_convergent_clone_id
+clusters <- df_convergence_all_genes %>% select(sequence_id, unique_convergent_clone_id)
+fwrite(clusters,"/mnt/susanne/datasets/convergence/clusters.tsv",sep="\t")
+
+
+################################ python used to identify connected components in the graph of convergent clones
+
+# read in the output of the python script
+cc <- fread("/mnt/susanne/datasets/convergence/connected_components.tsv", sep = "\t", header = F)
+df_convergence_all_genes$collapsed_convergent_clone_id <- NA
+
+#create a mapping from each unique convergent clone id to the representative collapsed convergent clone id (first clone_id)
+unique_convergent_clone_ids <- lapply(strsplit(as.character(cc$V1), ","), unique)
+representatives <- sapply(unique_convergent_clone_ids, `[`, 1)
+flattened_ids <- unlist(unique_convergent_clone_ids)
+mapping <- setNames(rep(representatives, lengths(unique_convergent_clone_ids)), flattened_ids)
+#map each unique convergent clone id to the representative collapsed convergent clone id
+df_convergence_all_genes$collapsed_convergent_clone_id <- mapping[df_convergence_all_genes$unique_convergent_clone_id]
+
+
+################################### ANALYSIS OF CLONES ###################################
 
 # count all convergent clones 
-count_convergent_clones_all <- countClones(df_convergence_all_genes, clone = "unique_convergent_clone_id")
-count_convergent_clones_subject <- countClones(df_convergence_all_genes, groups="subject_id",clone="unique_convergent_clone_id")
-count_convergent_clones_status <- countClones(df_convergence_all_genes, groups="status", clone="unique_convergent_clone_id")
-write.table(count_convergent_clones_all, "/mnt/susanne/datasets/convergent_clones_all.tsv", sep = "\t", quote = F, row.names = F)
-write.table(count_convergent_clones_subject, "/mnt/susanne/datasets/convergent_clones_subject.tsv", sep = "\t", quote = F, row.names = F)
-write.table(count_convergent_clones_status, "/mnt/susanne/datasets/convergent_clones_status.tsv", sep = "\t", quote = F, row.names = F)
+count_convergent_clones_all <- countClones(df_convergence_all_genes, clone = "collapsed_convergent_clone_id")
+count_convergent_clones_subject_status <- countClones(df_convergence_all_genes, groups=c("subject_id","status"),clone="collapsed_convergent_clone_id")
+
+fwrite(count_convergent_clones_all, "/mnt/susanne/datasets/convergent_clones_all.tsv", sep = "\t", quote = F, row.names = F)
+fwrite(count_convergent_clones_subject_status, "/mnt/susanne/datasets/convergent_clones_subject_status.tsv", sep = "\t", quote = F, row.names = F)
 
 
+
+########################################## ANALYSIS OF SEQUENCES ###############################################################
+
+conv_clone_freq_all <- as.data.frame(table(count_convergent_clones_subject$unique_convergent_clone_id)) %>% arrange(desc(Freq))
+conv_clone_freq_all_top <- as.character(conv_clone_freq_all$Var1[1:10])
+conv_clone_freq_all_shared <- conv_clone_freq_all %>% filter(Freq > 1)# %>% pull(Var1)
+n_distinct(conv_clone_freq_all_shared)
+
+
+count_convergent_clones_all_shared <- count_convergent_clones_all %>% 
+  filter(unique_convergent_clone_id %in% conv_clone_freq_all_shared) %>%
+  left_join(conv_clone_freq_all, by = join_by(unique_convergent_clone_id == Var1)) %>%
+  rename(subject_frequency = Freq)
+count_convergent_clones_all_shared$rank <- c(1:nrow(count_convergent_clones_all_shared))
+
+p1 <- ggplot(count_convergent_clones_all_shared, aes(x=rank, y=seq_count)) +
+  geom_line() +
+  geom_point() +
+  scale_x_log10() +
+  theme_bw() +
+  labs(x="Convergent clusters by rank",
+       y="Number of sequences",
+       title=paste0("Convergent cluster size (N=",nrow(count_convergent_clones_all_shared),")"))
+p1
+
+count_convergent_clones_all_shared <- count_convergent_clones_all_shared %>% 
+  arrange(desc(subject_frequency)) %>%
+  mutate(rank_subj=c(1:nrow(count_convergent_clones_all_shared)))
+
+p2 <- ggplot(count_convergent_clones_all_shared, aes(x=rank_subj, y=subject_frequency)) +
+  geom_line() +
+  geom_point() +
+  scale_x_log10() +
+  theme_bw() +
+  labs(x="Convergent clusters by rank",
+       y="Number of subjects per cluster",
+       title=paste0("Convergent clusters (N=",nrow(count_convergent_clones_all_shared),")"))
+p2
+
+conv_clone_freq_all_top_100 <- as.character(conv_clone_freq_all$Var1[1:100])
+
+count_convergent_clones_sampleid_foronehot <- count_convergent_clones_subject %>% 
+  select(unique_convergent_clone_id, subject_id) %>%
+  filter(unique_convergent_clone_id %in% conv_clone_freq_all_top_100) %>%
+  mutate_at(c("subject_id"), as.factor)
+
+count_convergent_clones_onehot <- one_hot(as.data.table(count_convergent_clones_sampleid_foronehot), cols = "subject_id") %>%
+  aggregate(.~unique_convergent_clone_id, function(x)sum(x)) %>%
+  tibble::column_to_rownames("unique_convergent_clone_id")
+colnames(count_convergent_clones_onehot) <- sub('^subject_id_', '', colnames(count_convergent_clones_onehot))
+
+col_annot_project <- all_heavy %>% select(subject_id, status) %>% distinct() %>%
+  filter(subject_id %in% colnames(count_convergent_clones_onehot)) %>%
+  arrange(desc(status)) %>%
+  tibble::column_to_rownames("subject_id")
+
+# prepare colors for annotations
+mycolors <- c("#FC4E07", "#00AFBB")
+names(mycolors) <- c("MS", "healthy")
+mycolors <- list(status = mycolors)
+
+count_convergent_clones_onehot_ordered <- count_convergent_clones_onehot[conv_clone_freq_all_top_100,]
+count_convergent_clones_onehot_ordered <- count_convergent_clones_onehot_ordered[,rownames(col_annot_project)]
+
+pheat<-pheatmap(as.matrix(count_convergent_clones_onehot_ordered),
+                cellwidth = 3,
+                cellheight = 10,
+                cluster_rows = F,
+                cluster_cols = F,
+                color = colorRampPalette(c("white", "black"))(2),
+                border_color = "gray80",
+                scale="none",
+                show_colnames = F,
+                annotation_col = col_annot_project,
+                annotation_colors = mycolors
+)
+pheat
