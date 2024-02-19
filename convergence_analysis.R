@@ -141,45 +141,65 @@ fwrite(count_convergent_clones_subject_status, "/mnt/susanne/datasets/convergent
 
 ########################################## ANALYSIS OF SEQUENCES ###############################################################
 
-conv_clone_freq_all <- as.data.frame(table(count_convergent_clones_subject$unique_convergent_clone_id)) %>% arrange(desc(Freq))
-conv_clone_freq_all_top <- as.character(conv_clone_freq_all$Var1[1:10])
-conv_clone_freq_all_shared <- conv_clone_freq_all %>% filter(Freq > 1)# %>% pull(Var1)
-n_distinct(conv_clone_freq_all_shared)
+# filter count_convergent_clones_subject_status to only keep clones present in at least two MS patients
+conv_clone_freq_MS <- count_convergent_clones_subject_status %>% filter(status == "MS") %>% select(subject_id,status,collapsed_convergent_clone_id)
+conv_clone_freq_MS <- as.data.frame(table(conv_clone_freq_MS$collapsed_convergent_clone_id)) %>% arrange(desc(Freq))
+conv_clone_freq_MS_shared <- conv_clone_freq_MS %>% filter(Freq > 1) %>% pull(Var1)
+n_distinct(conv_clone_freq_MS_shared)
+count_convergent_clones_MS_shared <- count_convergent_clones_subject_status %>% filter(collapsed_convergent_clone_id %in% conv_clone_freq_MS_shared)
 
+# group by collapsed_convergent_clone_id, count number of MS patients and rank the clones by number of MS patients
+conv_clone_freq_MS_shared_sorted <- count_convergent_clones_MS_shared %>% group_by(collapsed_convergent_clone_id) %>% summarise(n_MS_subjects = sum(status == "MS", na.rm = TRUE)) %>% arrange(desc(n_MS_subjects))
+conv_clone_freq_MS_shared_sorted$rank <- c(1:nrow(conv_clone_freq_MS_shared_sorted))
+# join with the original dataframe to get all columns
+count_convergent_clones_MS_shared <- count_convergent_clones_MS_shared %>% left_join(conv_clone_freq_MS_shared_sorted, by = "collapsed_convergent_clone_id")
 
-count_convergent_clones_all_shared <- count_convergent_clones_all %>% 
-  filter(unique_convergent_clone_id %in% conv_clone_freq_all_shared) %>%
-  left_join(conv_clone_freq_all, by = join_by(unique_convergent_clone_id == Var1)) %>%
-  rename(subject_frequency = Freq)
-count_convergent_clones_all_shared$rank <- c(1:nrow(count_convergent_clones_all_shared))
+# plot the number of sequences per convergent cluster sorted by rank
 
-p1 <- ggplot(count_convergent_clones_all_shared, aes(x=rank, y=seq_count)) +
+p1 <- ggplot(conv_clone_freq_MS_shared_sorted, aes(x=rank, y=n_MS_subjects)) +
   geom_line() +
   geom_point() +
   scale_x_log10() +
   theme_bw() +
+  theme(aspect.ratio=3/5) +
   labs(x="Convergent clusters by rank",
-       y="Number of sequences",
-       title=paste0("Convergent cluster size (N=",nrow(count_convergent_clones_all_shared),")"))
+       y="Number of MS subjects per cluster",
+       title=paste0("Convergent clusters (N=",nrow(conv_clone_freq_MS_shared_sorted),")"))
 p1
+ggsave(p1, filename = "/mnt/susanne/datasets/convergence/conv_clusters_ranked.png", width = 10, height = 6, units = "in", dpi = 300)
 
-count_convergent_clones_all_shared <- count_convergent_clones_all_shared %>% 
-  arrange(desc(subject_frequency)) %>%
-  mutate(rank_subj=c(1:nrow(count_convergent_clones_all_shared)))
 
-p2 <- ggplot(count_convergent_clones_all_shared, aes(x=rank_subj, y=subject_frequency)) +
-  geom_line() +
-  geom_point() +
-  scale_x_log10() +
-  theme_bw() +
-  labs(x="Convergent clusters by rank",
-       y="Number of subjects per cluster",
-       title=paste0("Convergent clusters (N=",nrow(count_convergent_clones_all_shared),")"))
-p2
+# group by collapsed_convergent_clone_id, for each group get number of MS and number of healthy subjects and calulate a Fisher's exact test
+conv_clone_freq_MS_healthy <- count_convergent_clones_MS_shared %>% group_by(collapsed_convergent_clone_id) %>% summarise(n_MS_subjects=sum(status == "MS"),n_healthy_subjects = sum(status == "healthy", na.rm = TRUE)) %>% arrange(desc(n_MS_subjects))
 
-conv_clone_freq_all_top_100 <- as.character(conv_clone_freq_all$Var1[1:100])
 
-count_convergent_clones_sampleid_foronehot <- count_convergent_clones_subject %>% 
+conv_clone_freq_MS_healthy$p.value <- apply(conv_clone_freq_MS_healthy, 1, function(x) fisher.test(matrix(c(as.numeric(x[2]),as.numeric(x[3]),27-as.numeric(x[2]),27-as.numeric(x[3])), nrow=2),alternative = "greater" )$p.value)
+conv_clone_freq_MS_healthy$p.value <- p.adjust(conv_clone_freq_MS_healthy$p.value, method = "BH")
+
+# number of significant clones
+n_significant_clones <- sum(conv_clone_freq_MS_healthy$p.value < 0.05)
+
+# filter for significant clones
+conv_clone_freq_MS_healthy_significant <- conv_clone_freq_MS_healthy %>% filter(p.value < 0.05)
+
+# get the full dataframe (df_convergence) of all significant clones (collapsed_convergent_clone_id)
+promising_clones <- df_convergence_all_genes %>% filter(collapsed_convergent_clone_id %in% conv_clone_freq_MS_healthy_significant$collapsed_convergent_clone_id)
+
+#group by collapsed_convergent_clone_id and subject_id and get the number of rows for each group
+promising_clones_sequences <- promising_clones %>% group_by(collapsed_convergent_clone_id, subject_id) %>% summarise(n = n())
+
+# pull column junction_aa from promising_clones_sequences and create a list of sequences for each clone
+promising_clones_sequences_list <- promising_clones %>% group_by(collapsed_convergent_clone_id) %>% summarise(junction_aa = list(unique(junction_aa)))
+
+# get the junction_length for each clone
+promising_clones_junction_length <- promising_clones %>% group_by(collapsed_convergent_clone_id) %>% summarise(junction_length = unique(junction_length))
+
+# get the V-genes for each clone
+promising_clones_v_call <- promising_clones %>% group_by(collapsed_convergent_clone_id) %>% summarise(v_call = list(unique(v_call)))
+
+
+
+'''count_convergent_clones_sampleid_foronehot <- count_convergent_clones_subject %>% 
   select(unique_convergent_clone_id, subject_id) %>%
   filter(unique_convergent_clone_id %in% conv_clone_freq_all_top_100) %>%
   mutate_at(c("subject_id"), as.factor)
@@ -214,4 +234,4 @@ pheat<-pheatmap(as.matrix(count_convergent_clones_onehot_ordered),
                 annotation_col = col_annot_project,
                 annotation_colors = mycolors
 )
-pheat
+pheat'''
